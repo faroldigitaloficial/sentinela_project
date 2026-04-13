@@ -7,75 +7,63 @@ from google.auth import default
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- CONFIGURAÇÕES ---
-API_KEY = "AQ.Ab8RN6JE7BnDyhh_t8iY8lHnJ8Ul4Ea0_DARUh8I2ifcHAqb6w"
+# --- CONFIGURAÇÕES DO TESTE ---
 PLANILHA_ID = "1DYQ6Hsbp5xua9RFGmNGeKqITGZygvo6gIdtF4WkMG1Q"
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 
-def carregar_contexto_google():
-    # Escopos apenas para Planilha e Drive
-    SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-    creds, _ = default(scopes=SCOPES)
-    client_gs = gspread.authorize(creds)
-    sh = client_gs.open_by_key(PLANILHA_ID)
-    return sh.sheet1, creds
+st.title("🛡️ Sentinela - Debug OAuth2")
 
-st.title("🛡️ Debug Sentinela - Fix Auth 401")
-
-if st.button("🚀 EXECUTAR TESTE DE IA"):
+if st.button("🚀 Iniciar Teste de Conexão"):
     try:
-        # 1. Carregar dados da Planilha e Drive
-        ws, creds = carregar_contexto_google()
+        # 1. OBTER CREDENCIAIS DO AMBIENTE (OAuth2)
+        # O segredo é incluir o escopo 'generative-language'
+        SCOPES = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/generative-language'
+        ]
+        
+        st.info("Obtendo credenciais do sistema...")
+        creds, _ = default(scopes=SCOPES)
+        
+        # 2. CONFIGURAR GEMINI COM OAUTH2
+        # Note que não passamos api_key aqui, apenas as credentials
+        genai.configure(credentials=creds)
+        model = genai.GenerativeModel(MODEL_NAME)
+        
+        # 3. TESTAR ACESSO AO DRIVE
+        st.info("Acessando Planilha e Drive...")
+        client_gs = gspread.authorize(creds)
+        sh = client_gs.open_by_key(PLANILHA_ID)
+        ws = sh.sheet1
         df = pd.DataFrame(ws.get_all_records())
         
         if df.empty:
-            st.error("Planilha sem dados!")
+            st.error("Planilha vazia!")
             st.stop()
-
+            
         row = df.iloc[0]
         file_id = row.get('ID do Arquivo')
-        st.info(f"Baixando arquivo: {file_id}")
-
-        # 2. Download do binário (Drive)
+        
+        # 4. DOWNLOAD DE TESTE
         service_drive = build('drive', 'v3', credentials=creds)
         req = service_drive.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, req)
         done = False
-        while not done:
-            _, done = downloader.next_chunk()
+        while not done: _, done = downloader.next_chunk()
         
-        pdf_bytes = fh.getvalue()
-        st.success("✅ Download concluído!")
-
-        # 3. CHAMADA GEMINI (ISOLADA)
-        # Forçamos a configuração da API_KEY novamente antes da chamada
-        genai.configure(api_key=API_KEY)
+        # 5. TESTAR CHAMADA DA IA
+        st.warning(f"Chamando {MODEL_NAME} via OAuth2...")
+        prompt = "Resuma este documento em uma frase."
+        doc = {'mime_type': 'application/pdf', 'data': fh.getvalue()}
         
-        # Criamos o modelo
-        model = genai.GenerativeModel(model_name=MODEL_NAME)
+        response = model.generate_content([prompt, doc])
         
-        prompt = "Você é o Agente Sentinela. Analise este documento e retorne um JSON."
-        
-        # Preparação do conteúdo
-        content = [
-            prompt,
-            {"mime_type": "application/pdf", "data": pdf_bytes}
-        ]
-
-        st.warning(f"Solicitando análise ao {MODEL_NAME}...")
-        
-        # AQUI É ONDE O ERRO OCORRIA: 
-        # Adicionamos uma tentativa de limpar qualquer transporte residual
-        response = model.generate_content(content)
-        
-        st.success("✅ IA RESPONDEU COM SUCESSO:")
+        st.success("✅ SUCESSO ABSOLUTO!")
+        st.write("**Resposta da IA:**")
         st.write(response.text)
-
+        
     except Exception as e:
-        st.error("❌ ERRO DETECTADO")
-        # Mostra o erro detalhado para diagnóstico
+        st.error("❌ O teste falhou!")
         st.exception(e)
-
-st.divider()
-st.caption("Nota: Se o erro 401 persistir, pode haver uma variável de ambiente 'GOOGLE_APPLICATION_CREDENTIALS' conflitando com a API Key.")

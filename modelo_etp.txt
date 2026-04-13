@@ -1,0 +1,58 @@
+
+=== SENTINELA - ANÁLISE AUTOMATIZADA ===
+
+Tipo de Documento: ETP
+
+--- RESUMO DO DOCUMENTO ---
+PODER JUDICIÁRIO DO ESTADO DO ESPÍRITO SANTO - PJES
+SECRETARIA DE INFRAESTRUTURA
+SISTEMA DE COMPRAS, LICITAÇÕES, CONTRATOS E INSTRUMENTOS CONGÊNERES
+ESTUDO TÉCNICO PRELIMINAR - ETP
+Estudo Técnico Preliminar - ETP Nº 2605653/2025 - ASSESSORIA DE SEGURANCA INSTITUCIONAL
+ 
+Conforme processo eletrônico nº 7002307-71.2021.8.08.0000, as contratações devem ser precedidas
+de Estudos Técnicos Preliminares (ETP's), atendendo ao disposto na Lei nº 14.133/2021 e na Instrução
+Normativa nº 40/2020, tal como estabelece a Norma Introdutória NP 01.
+Obje>vando subsidiar a elaboração do ETP, importante examinar os norma>vos (normas, regras,
+preceitos e legislações) que disciplinam os materiais/equipamentos a serem adquiridos, de acordo com
+sua natureza, além de analisar as aquisições anteriores do mesmo objeto, a ﬁm de iden>ﬁcar as
+inconsistências ocorridas nas fases de planejamento da contratação, seleção do fornecedor e
+recebimento e utilização dos materiais/equipamentos.
+Orientações para elaboração do Estudo Técnico Preliminar, encontram-se disponíveis na Intranet do
+PJES, em 
+"Norma de Procedimentos" - Formulários da NP 01
+ - Sistema de Compras, Licitações e
+Contratos. 
+1- INFORMAÇÕES BÁSICAS:
+Número do processo administrativo:
+7000523-54.2024.8.08.0000
+Área requisitante:
+Assessoria de Segurança Institucional
+2- 
+DESCRIÇÃO DA NECESSIDADE DE AQUISIÇÃO
+:
+O sistema de monitoramento de alarmes é uma importante ferramenta na prevenção de possíveis
+delitos, uma vez que inibe a circulação de pesso
+
+--- BASE LEGAL IDENTIFICADA ---
+
+Art. 115 (gestão contratual) - risco: alto
+
+Art. 20 (planejamento) - risco: alto
+
+Art. 42 (planejamento) - risco: médio
+
+Art. 19 (governança) - risco: alto
+
+Art. 94 (contrato) - risco: alto
+
+Art. 23 (planejamento) - risco: alto
+
+Art. 58 (julgamento) - risco: alto
+
+--- ACHADOS INICIAIS ---
+
+--- RECOMENDAÇÕES ---
+- Verificar conformidade com a Lei 14.133
+- Garantir presença dos elementos obrigatórios
+- Revisar planejamento da contratação

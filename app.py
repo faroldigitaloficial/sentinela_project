@@ -16,12 +16,18 @@ from google.cloud import storage
 st.set_page_config(page_title="Sentinela - v0.3", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=60 * 1000, key="datarefresh")
 
-API_KEY = "AQ.Ab8RN6JE7BnDyhh_t8iY8lHnJ8Ul4Ea0_DARUh8I2ifcHAqb6w"
 PLANILHA_ID = "1DYQ6Hsbp5xua9RFGmNGeKqITGZygvo6gIdtF4WkMG1Q"
 BUCKET_NAME = "bucket-sentinela"
 MATRIZ_FILE_NAME = "matriz_sentinela.csv"
 
-genai.configure(api_key=API_KEY, transport='rest')
+# Definição de Escopos para autenticação de sistema
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/generative-language',
+    'https://www.googleapis.com/auth/cloud-platform'
+]
+
 fuso_br = pytz.timezone('America/Sao_Paulo')
 
 # --- FUNÇÕES DE DADOS ---
@@ -36,7 +42,7 @@ def obter_matriz_do_storage():
         return pd.DataFrame()
 
 def carregar_dados_planilha():
-    SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+    # Obtém as credenciais padrão do ambiente (OAuth2)
     creds, _ = default(scopes=SCOPES)
     client_gs = gspread.authorize(creds)
     sh = client_gs.open_by_key(PLANILHA_ID)
@@ -66,6 +72,8 @@ if not st.session_state.logado:
 # --- CARREGAMENTO DE DADOS ---
 try:
     df, ws, creds = carregar_dados_planilha()
+    # Configura o Gemini usando as credenciais de sistema em vez de API_KEY
+    genai.configure(credentials=creds)
 except Exception as e:
     st.error(f"Erro de conexão: {e}")
     st.stop()
@@ -103,8 +111,6 @@ if menu == "Dashboard":
 elif menu == "Controle":
     st.header("Controle de Processamento")
     
-    # Colunas solicitadas (incluindo as novas)
-    # Garantindo que as colunas existam para não quebrar a visualização
     colunas_exibicao = [
         "Número do Processo", 
         "Nome do Documento", 
@@ -114,7 +120,6 @@ elif menu == "Controle":
         "Status"
     ]
     
-    # Filtro para mostrar apenas colunas que de fato existem no DF no momento
     colunas_presentes = [c for c in colunas_exibicao if c in df.columns]
     
     selecao = st.dataframe(
@@ -146,28 +151,35 @@ elif menu == "Controle":
                 if st.button("📝 Disparar Re-análise"):
                     with st.spinner("O Sentinela está re-analisando..."):
                         try:
+                            # Chama o modelo configurado via credenciais de sistema
                             model = genai.GenerativeModel(model_name='models/gemini-3.1-flash-lite-preview')
                             service_drive = build('drive', 'v3', credentials=creds)
                             file_id = row.get('ID do Arquivo')
                             
                             # Download
-                            req = service_drive.files().get_media(fileId=file_id)
+                            meta = service_drive.files().get(fileId=file_id, fields='mimeType').execute()
+                            mime_real = meta.get('mimeType')
+
+                            if "google-apps.document" in mime_real:
+                                req = service_drive.files().export_media(fileId=file_id, mimeType='application/pdf')
+                                mime_ia = 'application/pdf'
+                            else:
+                                req = service_drive.files().get_media(fileId=file_id)
+                                mime_ia = mime_real
+                            
                             fh = io.BytesIO()
                             downloader = MediaIoBaseDownload(fh, req)
                             done = False
                             while not done: _, done = downloader.next_chunk()
                             
-                            # IA - Correção do erro de tabulate usando to_string()
+                            # IA
                             df_matriz = obter_matriz_do_storage()
                             regras = df_matriz.to_string(index=False) if not df_matriz.empty else "Analise conforme padrões gerais."
                             
                             prompt = f"Você é o Agente Sentinela. Analise conforme a MATRIZ: {regras}. Responda em JSON."
                             
-                            # Detecção simples de mime_type
-                            mime = "application/pdf" # default
-                            
                             response = model.generate_content(
-                                [prompt, {"mime_type": mime, "data": fh.getvalue()}], 
+                                [prompt, {"mime_type": "application/pdf" if "document" in mime_real else mime_ia, "data": fh.getvalue()}], 
                                 generation_config={"response_mime_type": "application/json"}
                             )
                             
@@ -176,7 +188,6 @@ elif menu == "Controle":
                             col_ret = cabecalho.index('Retorno') + 1
                             ws.update_cell(idx + 2, col_ret, response.text)
                             
-                            # Atualiza Data de Último Processamento se a coluna existir
                             if 'Data Ultimo Processamento' in cabecalho:
                                 col_data_proc = cabecalho.index('Data Ultimo Processamento') + 1
                                 agora = datetime.now(fuso_br).strftime("%d/%m/%Y %H:%M:%S")
@@ -188,7 +199,6 @@ elif menu == "Controle":
                             st.error(f"Erro no processamento: {e}")
 
             with col_btn2:
-                # Alterado para abrir a PASTA do processo conforme solicitado
                 id_pasta = row.get('ID da Pasta')
                 if id_pasta:
                     st.link_button("📂 Abrir Pasta do Processo", f"https://drive.google.com/drive/folders/{id_pasta}")

@@ -1,93 +1,136 @@
 import streamlit as st
-import time
 import pandas as pd
+import plotly.express as px
+from streamlit_autorefresh import st_autorefresh
+import gspread
+import io
+import pytz
+import time
 from datetime import datetime
+import google.generativeai as genai
+from google.auth import default
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from google.cloud import storage
 
-# Configuração Visual
-st.set_page_config(page_title="Sentinela Web", page_icon="🛡️", layout="wide")
+# --- CONFIGURAÇÕES DO SENTINELA ---
+st.set_page_config(page_title="Sentinela Web - v0.2", layout="wide", page_icon="🛡️")
+st_autorefresh(interval=60 * 1000, key="datarefresh")
 
-# --- SIMULAÇÃO DE LOGIN ---
+API_KEY = "AQ.Ab8RN6JE7BnDyhh_t8iY8lHnJ8Ul4Ea0_DARUh8I2ifcHAqb6w"
+PLANILHA_ID = "1DYQ6Hsbp5xua9RFGmNGeKqITGZygvo6gIdtF4WkMG1Q"
+BUCKET_NAME = "bucket-sentinela"
+MATRIZ_FILE_NAME = "matriz_sentinela.csv"
+FOLDER_ID_DESTINO = "1Ei8yXaANNHoj-Hvsy6Yyvm-AQVTzHX2N"
+
+genai.configure(api_key=API_KEY, transport='rest')
+fuso_br = pytz.timezone('America/Sao_Paulo')
+
+# --- FUNÇÕES NATIVAS DO MONITOR ---
+def obter_matriz_do_storage():
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(MATRIZ_FILE_NAME)
+        conteudo = blob.download_as_text()
+        return pd.read_csv(io.StringIO(conteudo))
+    except:
+        return pd.DataFrame()
+
+def carregar_dados_planilha():
+    SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+    creds, _ = default(scopes=SCOPES)
+    client_gs = gspread.authorize(creds)
+    sh = client_gs.open_by_key(PLANILHA_ID)
+    worksheet = sh.sheet1
+    df = pd.DataFrame(worksheet.get_all_records())
+    return df, worksheet, creds
+
+# --- INTERFACE ---
+st.title("🛡️ Sentinela - Inteligência Fiscal Autônoma")
+
 if 'logado' not in st.session_state:
     st.session_state.logado = False
 
 if not st.session_state.logado:
-    st.title("🛡️ Sentinela - Farol Digital")
-    st.subheader("Login do Auditor")
-    user = st.text_input("Usuário")
-    pw = st.text_input("Senha", type="password")
-    if st.button("Entrar"):
-        st.session_state.logado = True
-        st.rerun()
+    with st.sidebar:
+        senha = st.text_input("Acesso Sentinela", type="password")
+        if senha == "farol2026":
+            st.session_state.logado = True
+            st.rerun()
+    st.warning("Aguardando autenticação...")
     st.stop()
 
-# --- DASHBOARD PRINCIPAL ---
-st.sidebar.title("Família Sentinela")
-aba = st.sidebar.radio("Navegação", ["Dashboard", "Painel de Auditoria", "Configurações"])
+# Carregamento Real-time
+try:
+    df, ws, creds = carregar_dados_planilha()
+except Exception as e:
+    st.error(f"Erro de conexão com o ecossistema Google: {e}")
+    st.stop()
 
-if aba == "Dashboard":
-    st.title("📊 Indicadores Gerenciais")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Processos em Análise", "14", "+2 hoje")
-    c2.metric("Conformidade Média", "88%", "Estável")
-    c3.metric("Tempo Economizado", "42h", "Este mês")
+# Dashboard de métricas reais
+col1, col2, col3, col4 = st.columns(4)
+total = len(df)
+proc = len(df[df['Status'].str.contains('2', na=False)])
+pend = len(df[df['Status'].str.contains('1', na=False)])
 
-elif aba == "Painel de Auditoria":
-    st.title("🛡️ Painel do Auditor")
-    st.write("Selecione os documentos para gerar a manifestação técnica:")
+col1.metric("Arquivos no Fluxo", total)
+col2.metric("Processados ✅", proc)
+col3.metric("Aguardando ⏳", pend, delta=f"{pend} pendentes", delta_color="inverse")
+col4.metric("Eficiência", f"{(proc/total*100 if total > 0 else 0):.1f}%")
 
-    # Simulando dados da nossa planilha
-    dados = [
-        {"Selecionar": False, "Arquivo": "ETP_Digitalizacao_01.pdf", "Tipo": "ETP", "Status": "Analisado"},
-        {"Selecionar": False, "Arquivo": "TR_Servicos_Nuvem.docx", "Tipo": "TR", "Status": "Analisado"},
-        {"Selecionar": False, "Arquivo": "Parecer_Juridico_Ref.html", "Tipo": "Parecer", "Status": "Pendente"},
-    ]
-    df = pd.DataFrame(dados)
+# Área de Auditoria
+st.divider()
+colunas_tabela = ["Número do Processo", "Tipo de Documento", "Data", "Status"]
+selecao = st.dataframe(df[colunas_tabela], use_container_width=True, on_select="rerun", selection_mode="single-row")
+
+if len(selecao['selection']['rows']) > 0:
+    idx = selecao['selection']['rows'][0]
+    row = df.iloc[idx]
     
-    # Criando a tabela com seleção
-    edited_df = st.data_editor(df, hide_index=True, use_container_width=True)
+    st.subheader(f"🔍 Análise: {row['Número do Processo']}")
+    
+    tab1, tab2 = st.tabs(["📄 Resultado da IA", "🚀 Ações do Auditor"])
+    
+    with tab1:
+        st.write(row.get('Retorno', 'Sem dados de retorno.'))
+        if 'Métricas de Execução' in row:
+            st.caption(f"⚙️ {row['Métricas de Execução']}")
+            
+    with tab2:
+        if st.button("📝 Disparar Re-análise (Gemini 3.1 Flash Lite)"):
+            with st.spinner("O Sentinela está re-analisando o documento..."):
+                # REPRODUZINDO A LÓGICA DO SEU MONITOR
+                model = genai.GenerativeModel(model_name='models/gemini-3.1-flash-lite-preview')
+                service_drive = build('drive', 'v3', credentials=creds)
+                file_id = row.get('ID do Arquivo')
+                
+                # Download
+                req = service_drive.files().get_media(fileId=file_id)
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, req)
+                done = False
+                while not done: _, done = downloader.next_chunk()
+                
+                # IA
+                df_matriz = obter_matriz_do_storage()
+                regras = df_matriz.to_markdown(index=False) if not df_matriz.empty else "Analise conforme padrões gerais."
+                
+                prompt = f"Você é o Agente Sentinela. Analise conforme a MATRIZ: {regras}. Responda em JSON."
+                pdf_part = {"mime_type": "application/pdf", "data": fh.getvalue()}
+                
+                response = model.generate_content([prompt, pdf_part], generation_config={"response_mime_type": "application/json"})
+                
+                # Atualização (Linha idx + 2 pois pandas é 0 e planilha tem cabeçalho)
+                cabecalho = ws.row_values(1)
+                col_ret = cabecalho.index('Retorno') + 1
+                ws.update_cell(idx + 2, col_ret, response.text)
+                st.success("Análise atualizada na planilha!")
+                st.rerun()
 
-    st.divider()
+        st.link_button("📂 Abrir Arquivo no Drive", f"https://docs.google.com/document/d/{row['ID do Arquivo']}")
 
-    # --- O MOMENTO UAU: GERAÇÃO COM GHOST WRITING ---
-    if st.button("⚡ Gerar Manifestação Técnica"):
-        selecionados = edited_df[edited_df['Selecionar'] == True]['Arquivo'].tolist()
-        
-        if len(selecionados) < 2:
-            st.warning("Selecione pelo menos 2 documentos (ex: ETP e TR) para cruzar os dados.")
-        else:
-            st.write("### 🧠 Inteligência Sentinela em Ação")
-            
-            with st.status("Processando documentos...", expanded=True) as status:
-                st.write("🔍 Acessando cofre de templates no Farol Storage...")
-                time.sleep(1.5)
-                st.write(f"📄 Cruzando informações de: {', '.join(selecionados)}...")
-                time.sleep(2)
-                st.write("✍️ Redigindo parecer técnico moderno...")
-                status.update(label="Manifestação Concluída!", state="complete", expanded=False)
-
-            # EFEITO GHOST WRITING
-            st.subheader("📝 Prévia da Manifestação")
-            placeholder = st.empty()
-            texto_final = f"""
-            **ANÁLISE TÉCNICA SENTINELA nº {datetime.now().year}/001**
-            
-            Direto ao ponto: a análise cruzada entre o {selecionados[0]} e o {selecionados[1]} 
-            revela total convergência técnica. Os requisitos de sustentabilidade e os 
-            critérios de aceitabilidade estão alinhados com a legislação vigente.
-            
-            **Conclusão:** O processo está apto para prosseguimento, sem óbices identificados.
-            
-            ---
-            *Documento pronto para assinatura digital.*
-            """
-            
-            frase_atual = ""
-            for char in texto_final:
-                frase_atual += char
-                placeholder.markdown(frase_atual + " ▌")
-                time.sleep(0.01) # Velocidade da digitação
-            
-            placeholder.markdown(texto_final)
-            
-            st.success("✅ Documento salvo com sucesso no Drive do Processo!")
-            st.button("📄 Abrir no Google Docs")
+# Gráfico Evolutivo
+df['Data_dt'] = pd.to_datetime(df['Data'], dayfirst=True, errors='coerce')
+df_dia = df.groupby(df['Data_dt'].dt.date)['Status'].value_counts().unstack().fillna(0)
+st.plotly_chart(px.line(df_dia, title="Monitoramento Sentinela 24h", markers=True), use_container_width=True)

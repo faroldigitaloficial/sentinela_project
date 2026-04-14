@@ -177,7 +177,7 @@ elif menu == "Controle":
                                     'parents': [id_pasta]
                                 }
                                 # Cria o arquivo vazio
-                                doc_file = service_drive.files().create(body=file_metadata, fields='id').execute()
+                                doc_file = service_drive.files().create(body=file_metadata, fields='id', supportsAllDrives=True, ignoreDefaultVisibility=True).execute()
                                 doc_id = doc_file.get('id')
                                 
                                 # Insere o texto da análise usando a Docs API

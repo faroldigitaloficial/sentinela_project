@@ -26,17 +26,13 @@ fuso_br = pytz.timezone('America/Sao_Paulo')
 
 # --- FUNÇÕES DE DADOS E AUTENTICAÇÃO OAUTH2 ---
 def carregar_contexto_google():
-    # Usando a mesma lógica que funcionou no seu backend
     SCOPES = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive',
         'https://www.googleapis.com/auth/generative-language'
     ]
     creds, _ = default(scopes=SCOPES)
-    
-    # Configura o Gemini para usar OAuth2 em vez de API_KEY
     genai.configure(credentials=creds)
-    
     client_gs = gspread.authorize(creds)
     sh = client_gs.open_by_key(PLANILHA_ID)
     return sh.sheet1, creds
@@ -51,7 +47,7 @@ def obter_matriz_do_storage():
     except:
         return pd.DataFrame()
 
-# --- SISTEMA DE LOGIN CENTRALIZADO ---
+# --- SISTEMA DE LOGIN ---
 if 'logado' not in st.session_state:
     st.session_state.logado = False
 
@@ -92,63 +88,47 @@ if menu == "Dashboard":
     total = len(df)
     proc = len(df[df['Status'].astype(str).str.contains('2', na=False)])
     pend = len(df[df['Status'].astype(str).str.contains('1', na=False)])
-
     c1.metric("Arquivos", total)
     c2.metric("Processados", proc)
     c3.metric("Pendentes", pend)
     c4.metric("Eficiência", f"{(proc/total*100 if total > 0 else 0):.1f}%")
 
-    if 'Data' in df.columns:
-        df['Data_dt'] = pd.to_datetime(df['Data'], dayfirst=True, errors='coerce')
-        df_dia = df.groupby(df['Data_dt'].dt.date)['Status'].value_counts().unstack().fillna(0)
-        st.plotly_chart(px.line(df_dia, title="Volume Diário", markers=True), use_container_width=True)
-
 # --- ABA: CONTROLE ---
 elif menu == "Controle":
     st.header("Controle")
-    
-    # Colunas solicitadas atualizadas
-    colunas_exibicao = [
-        "Número do Processo", 
-        "Nome do Documento", 
-        "Tipo de Documento", 
-        "Data", 
-        "Data Ultimo Processamento", 
-        "Status"
-    ]
+    colunas_exibicao = ["Número do Processo", "Nome do Documento", "Tipo de Documento", "Data", "Data Ultimo Processamento", "Status"]
     colunas_presentes = [c for c in colunas_exibicao if c in df.columns]
     
-    selecao = st.dataframe(
-        df[colunas_presentes], 
-        use_container_width=True, 
-        on_select="rerun", 
-        selection_mode="single-row", 
-        hide_index=True
-    )
+    selecao = st.dataframe(df[colunas_presentes], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
     if len(selecao['selection']['rows']) > 0:
         idx = selecao['selection']['rows'][0]
         row = df.iloc[idx]
-        
         st.divider()
-        st.subheader(f"🔍 Análise: {row.get('Número do Processo')}")
+        st.subheader(f"🔍 Processo: {row.get('Número do Processo')}")
         
-        t1, t2 = st.tabs(["📄 Resultado da IA", "🚀 Ações"])
+        # --- NOVAS TABS: RESUMO, ANÁLISE E AÇÕES ---
+        t_resumo, t_analise, t_acoes = st.tabs(["📝 Resumo", "📊 Análise", "🚀 Ações"])
         
-        with t1:
-            st.write(row.get('Retorno', 'Sem dados.'))
+        with t_resumo:
+            # Busca coluna 'Resumo' ou exibe aviso
+            st.write(row.get('Resumo', 'Resumo não disponível.'))
+            
+        with t_analise:
+            # Exibe o conteúdo da coluna 'Retorno' (Antigo Resultado da IA)
+            st.write(row.get('Retorno', 'Análise não disponível.'))
                 
-        with t2:
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                if st.button("📝 Disparar Re-análise"):
-                    with st.spinner("O Sentinela está re-analisando via OAuth2..."):
+        with t_acoes:
+            c1, c2, c3 = st.columns(3)
+            
+            with c1:
+                if st.button("🔄 Re-analisar"):
+                    with st.spinner("Processando..."):
                         try:
                             model = genai.GenerativeModel(MODEL_NAME)
                             service_drive = build('drive', 'v3', credentials=creds)
                             file_id = row.get('ID do Arquivo')
                             
-                            # Verificação de MimeType para suportar Google Docs (export)
                             meta = service_drive.files().get(fileId=file_id, fields='mimeType').execute()
                             mime = meta.get('mimeType')
                             
@@ -162,35 +142,55 @@ elif menu == "Controle":
                             done = False
                             while not done: _, done = downloader.next_chunk()
                             
-                            # Lógica da Matriz (Usando to_string para evitar erro de tabulate)
                             df_matriz = obter_matriz_do_storage()
                             regras = df_matriz.to_string(index=False) if not df_matriz.empty else "Padrões gerais."
                             
-                            prompt = f"Você é o Agente Sentinela. Analise conforme a MATRIZ: {regras}. Responda em JSON."
+                            prompt = f"Você é o Agente Sentinela. Analise conforme a MATRIZ: {regras}. Responda em texto estruturado."
+                            response = model.generate_content([prompt, {'mime_type': 'application/pdf', 'data': fh.getvalue()}])
                             
-                            response = model.generate_content([
-                                prompt, 
-                                {'mime_type': 'application/pdf', 'data': fh.getvalue()}
-                            ])
-                            
-                            # Atualização na Planilha
+                            # Atualiza Planilha
                             cabecalho_planilha = ws.row_values(1)
                             if 'Retorno' in cabecalho_planilha:
                                 ws.update_cell(idx + 2, cabecalho_planilha.index('Retorno') + 1, response.text)
                             
-                            if 'Data Ultimo Processamento' in cabecalho_planilha:
-                                agora = datetime.now(fuso_br).strftime("%d/%m/%Y %H:%M:%S")
-                                ws.update_cell(idx + 2, cabecalho_planilha.index('Data Ultimo Processamento') + 1, agora)
-
-                            st.success("Análise atualizada com sucesso!")
+                            st.success("Re-análise concluída!")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Erro no processamento: {e}")
+                            st.error(f"Erro: {e}")
 
-            with btn_col2:
-                # Alterado para abrir a PASTA do processo via ID da Pasta
+            with c2:
+                # --- NOVO BOTÃO: GERAR ANÁLISE (DOCS) ---
+                if st.button("📄 Gerar Analise (Docs)"):
+                    with st.spinner("Criando documento no Google Drive..."):
+                        try:
+                            service_drive = build('drive', 'v3', credentials=creds)
+                            id_pasta = row.get('ID da Pasta')
+                            conteudo_analise = row.get('Retorno', 'Sem conteúdo de análise para exportar.')
+                            nome_doc = f"Análise Sentinela - {row.get('Número do Processo')} - {datetime.now().strftime('%d-%m-%Y')}"
+                            
+                            if not id_pasta:
+                                st.error("ID da Pasta não encontrado.")
+                            else:
+                                file_metadata = {
+                                    'name': nome_doc,
+                                    'mimeType': 'application/vnd.google-apps.document',
+                                    'parents': [id_pasta]
+                                }
+                                # Cria o arquivo vazio
+                                doc_file = service_drive.files().create(body=file_metadata, fields='id').execute()
+                                doc_id = doc_file.get('id')
+                                
+                                # Insere o texto da análise usando a Docs API
+                                service_docs = build('docs', 'v1', credentials=creds)
+                                requests = [{'insertText': {'location': {'index': 1}, 'text': conteudo_analise}}]
+                                service_docs.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
+                                
+                                st.success(f"Documento criado com sucesso!")
+                                st.link_button("👁️ Visualizar Documento", f"https://docs.google.com/document/d/{doc_id}/edit")
+                        except Exception as e:
+                            st.error(f"Erro ao criar documento: {e}")
+
+            with c3:
                 id_pasta = row.get('ID da Pasta')
                 if id_pasta:
-                    st.link_button("📂 Abrir Pasta do Processo", f"https://drive.google.com/drive/folders/{id_pasta}")
-                else:
-                    st.warning("Coluna 'ID da Pasta' não encontrada ou vazia.")
+                    st.link_button("📂 Abrir Pasta", f"https://drive.google.com/drive/folders/{id_pasta}")

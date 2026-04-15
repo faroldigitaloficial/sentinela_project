@@ -6,6 +6,7 @@ import gspread
 import io
 import pytz
 import os
+import re 
 from datetime import datetime
 import google.generativeai as genai
 from google.auth import default
@@ -48,7 +49,6 @@ def obter_matriz_do_storage():
         return pd.DataFrame()
 
 def mapear_cor_risco(valor):
-    # Função auxiliar para o farol de risco
     if valor == "Alto": return "🔴"
     if valor == "Médio": return "🟡"
     return "🟢"
@@ -58,7 +58,7 @@ if 'logado' not in st.session_state:
     st.session_state.logado = False
 
 if not st.session_state.logado:
-    col_l1, col_l2, col_l3 = st.columns([1, 1, 1])
+    col_l2 = st.columns([1, 1, 1])[1]
     with col_l2:
         st.write("#")
         st.title("🛡️ Sentinela")
@@ -76,18 +76,13 @@ try:
     ws, creds = carregar_contexto_google()
     df_raw = pd.DataFrame(ws.get_all_records())
     
-    # Criando dados fakes de Processos (Pai) enquanto não existe a aba na planilha
     if not df_raw.empty:
-        # Extrai processos únicos
         df_processos = df_raw[['Número do Processo', 'ID da Pasta']].drop_duplicates().reset_index(drop=True)
-        # Adiciona colunas fakes solicitadas
         df_processos['Fase'] = "Instrução"
         df_processos['Risco'] = df_processos.index.map(lambda x: "Médio" if x % 2 == 0 else "Baixo")
         df_processos['Farol'] = df_processos['Risco'].apply(mapear_cor_risco)
         
-        # Adiciona risco fake nos documentos (Filho)
-        df_raw['Risco'] = "Baixo"
-        df_raw['Farol'] = "🟢"
+        df_raw['Farol'] = df_raw['Score'].apply(lambda x: "🔴" if str(x).replace('%','') < '50' else "🟢") if 'Score' in df_raw.columns else "🟢"
 except Exception as e:
     st.error(f"Erro de conexão: {e}")
     st.stop()
@@ -110,110 +105,106 @@ if menu == "Dashboard":
 # --- ABA: CONTROLE (PAI e FILHO) ---
 elif menu == "Controle":
     st.subheader("📁 Processos")
-    
-    # Tabela de Processos (PAI)
-    # Incluindo a coluna de Abrir Pasta aqui como solicitado
     cols_p = ["Farol", "Número do Processo", "Fase", "Risco"]
-    
-    sel_processo = st.dataframe(
-        df_processos[cols_p],
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        hide_index=True
-    )
+    sel_processo = st.dataframe(df_processos[cols_p], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
     if len(sel_processo['selection']['rows']) > 0:
-        p_idx = sel_processo['selection']['rows'][0]
-        proc_selecionado = df_processos.iloc[p_idx]
+        proc_selecionado = df_processos.iloc[sel_processo['selection']['rows'][0]]
         num_proc = proc_selecionado['Número do Processo']
         id_pasta = proc_selecionado['ID da Pasta']
 
         st.divider()
-        col_header_1, col_header_2 = st.columns([0.8, 0.2])
-        with col_header_1:
-            st.subheader(f"📄 Documentos do Processo: {num_proc}")
-        with col_header_2:
-            if id_pasta:
-                st.link_button("📂 Abrir Pasta no Drive", f"https://drive.google.com/drive/folders/{id_pasta}")
+        c_h1, c_h2 = st.columns([0.8, 0.2])
+        c_h1.subheader(f"📄 Documentos do Processo: {num_proc}")
+        if id_pasta: c_h2.link_button("📂 Abrir Pasta", f"https://drive.google.com/drive/folders/{id_pasta}")
 
-        # Filtrar documentos (FILHO)
         df_docs = df_raw[df_raw['Número do Processo'] == num_proc].reset_index()
-        cols_d = ["Farol", "Nome do Documento", "Tipo de Documento", "Status", "Data Ultimo Processamento"]
-        
-        sel_doc = st.dataframe(
-            df_docs[cols_d],
-            use_container_width=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            hide_index=True
-        )
+        cols_d = ["Farol", "Nome do Documento", "Tipo de Documento", "Score", "Status"]
+        sel_doc = st.dataframe(df_docs[cols_d], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
         if len(sel_doc['selection']['rows']) > 0:
-            d_idx = sel_doc['selection']['rows'][0]
-            doc_row = df_docs.iloc[d_idx]
-            original_idx = doc_row['index'] # Index real na planilha para o update_cell
-            
+            doc_row = df_docs.iloc[sel_doc['selection']['rows'][0]]
+            original_idx = doc_row['index']
             st.info(f"🔍 **Documento:** {doc_row['Nome do Documento']}")
             
             t_resumo, t_analise, t_acoes = st.tabs(["📝 Resumo", "📊 Análise", "🚀 Ações"])
-            
-            with t_resumo:
-                st.markdown(doc_row.get('Resumo', '*Nenhum resumo gerado.*'))
-            
-            with t_analise:
-                st.markdown(doc_row.get('Retorno', '*Nenhuma análise disponível.*'))
+            with t_resumo: st.markdown(doc_row.get('Resumo', '*Nenhum resumo.*'))
+            with t_analise: st.markdown(doc_row.get('Retorno', '*Nenhuma análise.*'))
             
             with t_acoes:
                 c_btn1, c_btn2 = st.columns(2)
-                
                 with c_btn1:
                     if st.button("🔄 Disparar Re-análise"):
-                        with st.spinner("IA processando documento..."):
+                        with st.spinner("IA processando e calculando score..."):
                             try:
-                                # Lógica de Re-análise mantida
                                 model = genai.GenerativeModel(MODEL_NAME)
                                 service_drive = build('drive', 'v3', credentials=creds)
                                 file_id = doc_row.get('ID do Arquivo')
                                 
                                 meta = service_drive.files().get(fileId=file_id, fields='mimeType').execute()
+                                mime_type = meta.get('mimeType')
                                 fh = io.BytesIO()
-                                if "google-apps.document" in meta.get('mimeType'):
+                                
+                                # LÓGICA DE TRATAMENTO POR TIPO DE ARQUIVO
+                                if "google-apps.document" in mime_type:
                                     req = service_drive.files().export_media(fileId=file_id, mimeType='application/pdf')
+                                    downloader = MediaIoBaseDownload(fh, req)
+                                    done = False
+                                    while not done: _, done = downloader.next_chunk()
+                                    input_data = [{'mime_type': 'application/pdf', 'data': fh.getvalue()}]
+                                elif "text/html" in mime_type or "html" in doc_row['Nome do Documento'].lower():
+                                    req = service_drive.files().get_media(fileId=file_id)
+                                    downloader = MediaIoBaseDownload(fh, req)
+                                    done = False
+                                    while not done: _, done = downloader.next_chunk()
+                                    input_data = [f"CONTEÚDO HTML DO DOCUMENTO:\n{fh.getvalue().decode('iso-8859-1', errors='ignore')}"]
                                 else:
                                     req = service_drive.files().get_media(fileId=file_id)
-                                
-                                downloader = MediaIoBaseDownload(fh, req)
-                                done = False
-                                while not done: _, done = downloader.next_chunk()
+                                    downloader = MediaIoBaseDownload(fh, req)
+                                    done = False
+                                    while not done: _, done = downloader.next_chunk()
+                                    input_data = [{'mime_type': mime_type, 'data': fh.getvalue()}]
                                 
                                 df_matriz = obter_matriz_do_storage()
-                                regras = df_matriz.to_string(index=False) if not df_matriz.empty else "Análise geral."
+                                matriz_texto = df_matriz.to_string(index=False) if not df_matriz.empty else "Matriz padrão Lei 14.133."
+
+                                prompt_final = f"""
+                                Você é o Agente Sentinela, auditor de licitações. Analise este documento conforme a MATRIZ:
+                                {matriz_texto}
+
+                                FORMATO DE RESPOSTA:
+                                1. Identifique Documento e Processo SEI.
+                                2. Tabela: | ID | Item de Verificação | Análise | Status |
+                                3. Status deve ser apenas: Adequada ou Inadequada.
+                                4. Notas de Auditoria e Recomendação Final.
+
+                                CÁLCULO DE SCORE (CRÍTICO):
+                                Ao final da resposta, escreva exatamente: "SCORE_FINAL: X%" 
+                                Onde X é a porcentagem de itens 'Adequada' em relação ao total de itens analisados na tabela.
+                                """
+
+                                # CHAMADA UNIFICADA (aceita lista de partes: texto ou mídia)
+                                response = model.generate_content([prompt_final] + input_data)
+                                texto_retorno = response.text
                                 
-                                prompt = f"Analise conforme a MATRIZ: {regras}. Responda em texto estruturado."
-                                response = model.generate_content([prompt, {'mime_type': 'application/pdf', 'data': fh.getvalue()}])
-                                
-                                # Atualiza na Planilha (usando o índice original)
+                                score_match = re.search(r"SCORE_FINAL:\s*(\d+%)", texto_retorno)
+                                score_valor = score_match.group(1) if score_match else "0%"
+
                                 cabecalho = ws.row_values(1)
-                                if 'Retorno' in cabecalho:
-                                    ws.update_cell(original_idx + 2, cabecalho.index('Retorno') + 1, response.text)
+                                if 'Retorno' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Retorno') + 1, texto_retorno)
+                                if 'Score' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Score') + 1, score_valor)
                                 
-                                st.success("Documento re-analisado!")
+                                st.success(f"Análise concluída! Score: {score_valor}")
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro: {e}")
+                            except Exception as e: st.error(f"Erro: {e}")
 
                 with c_btn2:
-                    # NOVA LÓGICA: Em vez de criar arquivo, mostra o texto para cópia
-                    if st.button("📄 Gerar Relatório para Cópia"):
-                        st.session_state.show_copy_area = True
+                    if st.button("📄 Relatório para Cópia"): st.session_state.show_copy_area = True
 
                 if st.session_state.get('show_copy_area'):
                     st.divider()
-                    st.subheader("📋 Relatório da Análise")
-                    st.caption("Copie o texto abaixo para seu documento oficial:")
-                    relatorio_full = f"ANÁLISE SENTINELA\nDocumento: {doc_row['Nome do Documento']}\nData: {doc_row['Data Ultimo Processamento']}\n\n{doc_row['Retorno']}"
-                    st.text_area("Conteúdo", value=relatorio_full, height=300)
-                    if st.button("Fechar Relatório"):
+                    relatorio = f"ANÁLISE SENTINELA\nDoc: {doc_row['Nome do Documento']}\n\n{doc_row['Retorno']}"
+                    st.text_area("Conteúdo", value=relatorio, height=300)
+                    if st.button("Fechar"): 
                         st.session_state.show_copy_area = False
                         st.rerun()

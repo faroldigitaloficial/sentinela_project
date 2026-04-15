@@ -15,7 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.cloud import storage
 
 # --- CONFIGURAÇÕES DO SENTINELA ---
-st.set_page_config(page_title="Sentinela 0.6", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Sentinela 0.5", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=60 * 1000, key="datarefresh")
 
 PLANILHA_ID = "1DYQ6Hsbp5xua9RFGmNGeKqITGZygvo6gIdtF4WkMG1Q"
@@ -49,7 +49,7 @@ def obter_matriz_do_storage():
         return pd.DataFrame()
 
 def obter_farol(score_str):
-    """Regra: Verde > 90%, Amarelo 70-90%, Vermelho < 70%"""
+    """Regra: Verde >= 90%, Amarelo 70-89%, Vermelho < 70%"""
     try:
         valor = float(str(score_str).replace('%', '').strip())
         if valor >= 90: return "🟢"
@@ -86,10 +86,9 @@ try:
         df_raw['Farol'] = df_raw['Score'].apply(obter_farol)
         
         # 2. Processamento de Processos: Calcular o menor score por processo
-        # Convertemos score para numerico temporariamente para achar o mínimo
-        df_raw['_score_num'] = pd.to_numeric(df_raw['Score'].astype(str).str.replace('%',''), errors='coerce').fillna(0)
+        df_raw['_score_num'] = pd.to_numeric(df_raw['Score'].astype(str).str.replace('%',''), errors='coerce')
         
-        # Agrupamos para pegar o menor score de cada processo
+        # Agrupamos para pegar o menor score de cada processo (ignora NaNs de docs não processados)
         df_min_scores = df_raw.groupby('Número do Processo')['_score_num'].min().reset_index()
         df_min_scores.columns = ['Número do Processo', 'Score Processo']
         
@@ -97,9 +96,13 @@ try:
         df_processos = df_raw[['Número do Processo', 'ID da Pasta']].drop_duplicates().sort_values('Número do Processo')
         df_processos = df_processos.merge(df_min_scores, on='Número do Processo', how='left')
         
-        df_processos['Farol'] = df_processos['Score Processo'].apply(lambda x: obter_farol(f"{x}%"))
+        # Formatação para exibição na tabela
+        df_processos['Score Processo %'] = df_processos['Score Processo'].apply(lambda x: f"{int(x)}%" if pd.notnull(x) else "---")
+        df_processos['Farol'] = df_processos['Score Processo'].apply(lambda x: obter_farol(x) if pd.notnull(x) else "⚪")
         df_processos['Fase'] = "Instrução"
-        df_processos['Risco'] = df_processos['Score Processo'].apply(lambda x: "Alto" if x < 70 else ("Médio" if x < 90 else "Baixo"))
+        df_processos['Risco'] = df_processos['Score Processo'].apply(
+            lambda x: "Alto" if pd.notnull(x) and x < 70 else ("Médio" if pd.notnull(x) and x < 90 else "Baixo")
+        )
 
 except Exception as e:
     st.error(f"Erro de conexão: {e}")
@@ -141,8 +144,9 @@ if menu == "Dashboard":
 
 # --- ABA: CONTROLE ---
 elif menu == "Controle":
-    st.subheader("📁 Processos (Ordenados por Número)")
-    cols_p = ["Farol", "Número do Processo", "Fase", "Risco"]
+    st.subheader("📁 Processos (Visualização Consolidada)")
+    # Adicionada a coluna 'Score Processo %' na visualização principal
+    cols_p = ["Farol", "Número do Processo", "Score Processo %", "Fase", "Risco"]
     sel_processo = st.dataframe(df_processos[cols_p], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
     if len(sel_processo['selection']['rows']) > 0:
@@ -152,12 +156,12 @@ elif menu == "Controle":
 
         st.divider()
         c_h1, c_h2 = st.columns([0.8, 0.2])
-        c_h1.subheader(f"📄 Documentos: {num_proc} (Menor Score: {proc_selecionado['Score Processo']}%)")
+        # Removido o score do título para não duplicar a informação da tabela
+        c_h1.subheader(f"📄 Documentos do Processo: {num_proc}")
         if id_pasta: c_h2.link_button("📂 Abrir Pasta", f"https://drive.google.com/drive/folders/{id_pasta}")
 
         df_docs = df_raw[df_raw['Número do Processo'] == num_proc].sort_values('Nome do Documento').reset_index()
         
-        # Ordem solicitada: Farol, Score, Tipo, Nome, Status
         cols_d = ["Farol", "Score", "Tipo de Documento", "Nome do Documento", "Status"]
         sel_doc = st.dataframe(df_docs[cols_d], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
@@ -209,7 +213,6 @@ elif menu == "Controle":
                             cabecalho = ws.row_values(1)
                             agora = datetime.now(fuso_br).strftime("%d/%m/%Y %H:%M:%S")
                             
-                            # Atualiza planilha (Linha original + 2 por causa do cabeçalho e índice zero)
                             if 'Retorno' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Retorno') + 1, texto_retorno)
                             if 'Score' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Score') + 1, score_valor)
                             if 'Status' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Status') + 1, "2 - Processado")

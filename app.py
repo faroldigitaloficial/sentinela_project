@@ -15,7 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.cloud import storage
 
 # --- CONFIGURAÇÕES DO SENTINELA ---
-st.set_page_config(page_title="Sentinela", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Sentinela 0.5", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=60 * 1000, key="datarefresh")
 
 PLANILHA_ID = "1DYQ6Hsbp5xua9RFGmNGeKqITGZygvo6gIdtF4WkMG1Q"
@@ -61,7 +61,7 @@ if not st.session_state.logado:
     col_l2 = st.columns([1, 1, 1])[1]
     with col_l2:
         st.write("#")
-        st.title("🛡️ Sentinela")
+        st.title("🛡️ Sentinela 0.5")
         senha_input = st.text_input("Senha de Acesso", type="password")
         if st.button("Entrar"):
             if senha_input == "farol2026":
@@ -77,18 +77,20 @@ try:
     df_raw = pd.DataFrame(ws.get_all_records())
     
     if not df_raw.empty:
-        df_processos = df_raw[['Número do Processo', 'ID da Pasta']].drop_duplicates().reset_index(drop=True)
+        # Preparação de Processos (Distinct)
+        df_processos = df_raw[['Número do Processo', 'ID da Pasta']].drop_duplicates().sort_values('Número do Processo').reset_index(drop=True)
         df_processos['Fase'] = "Instrução"
-        df_processos['Risco'] = df_processos.index.map(lambda x: "Médio" if x % 2 == 0 else "Baixo")
+        df_processos['Risco'] = "Baixo" # Default
         df_processos['Farol'] = df_processos['Risco'].apply(mapear_cor_risco)
         
-        df_raw['Farol'] = df_raw['Score'].apply(lambda x: "🔴" if str(x).replace('%','') < '50' else "🟢") if 'Score' in df_raw.columns else "🟢"
+        # Lógica de Farol por Score para os documentos
+        df_raw['Farol'] = df_raw['Score'].apply(lambda x: "🔴" if str(x).replace('%','') != '' and int(str(x).replace('%','')) < 50 else "🟢")
 except Exception as e:
     st.error(f"Erro de conexão: {e}")
     st.stop()
 
 # --- MENU LATERAL ---
-st.sidebar.title("🛡️ Sentinela")
+st.sidebar.title("🛡️ Sentinela 0.5")
 menu = st.sidebar.radio("Navegação", ["Dashboard", "Controle"])
 if st.sidebar.button("Sair"):
     st.session_state.logado = False
@@ -96,15 +98,39 @@ if st.sidebar.button("Sair"):
 
 # --- ABA: DASHBOARD ---
 if menu == "Dashboard":
-    st.header("Dashboard")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total de Processos", len(df_processos))
-    c2.metric("Documentos Analisados", len(df_raw[df_raw['Status'].astype(str).str.contains('2')]))
-    c3.metric("Alertas de Risco", len(df_processos[df_processos['Risco'] == "Alto"]))
+    st.header("Dashboard Sentinela 0.5")
+    
+    # Cálculos dos Cards
+    total_processos = df_raw['Número do Processo'].nunique()
+    total_docs = len(df_raw)
+    docs_processados = len(df_raw[df_raw['Status'].astype(str).str.contains('2')])
+    docs_pendentes = len(df_raw[df_raw['Status'].astype(str).str.contains('1')])
+    percentual_concluido = (docs_processados / total_docs * 100) if total_docs > 0 else 0
 
-# --- ABA: CONTROLE (PAI e FILHO) ---
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Qte Processos", total_processos)
+    c2.metric("Qte Documentos", total_docs)
+    c3.metric("Processados", docs_processados)
+    c4.metric("Pendentes", docs_pendentes)
+    c5.metric("% Concluído", f"{percentual_concluido:.1f}%")
+
+    # Gráfico Temporal
+    st.subheader("Produtividade: Documentos Processados por Dia")
+    if 'Data Ultimo Processamento' in df_raw.columns:
+        df_vix = df_raw[df_raw['Status'].astype(str).str.contains('2')].copy()
+        # Converte para data simples (YYYY-MM-DD)
+        df_vix['Data'] = pd.to_datetime(df_vix['Data Ultimo Processamento'], dayfirst=True, errors='coerce').dt.date
+        df_timeline = df_vix.groupby('Data').size().reset_index(name='Quantidade')
+        
+        if not df_timeline.empty:
+            fig = px.line(df_timeline, x='Data', y='Quantidade', markers=True, template="plotly_white", color_discrete_sequence=['#00CC96'])
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Aguardando processamento de documentos para gerar gráfico.")
+
+# --- ABA: CONTROLE ---
 elif menu == "Controle":
-    st.subheader("📁 Processos")
+    st.subheader("📁 Processos (Sentinela 0.5)")
     cols_p = ["Farol", "Número do Processo", "Fase", "Risco"]
     sel_processo = st.dataframe(df_processos[cols_p], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
@@ -118,93 +144,66 @@ elif menu == "Controle":
         c_h1.subheader(f"📄 Documentos do Processo: {num_proc}")
         if id_pasta: c_h2.link_button("📂 Abrir Pasta", f"https://drive.google.com/drive/folders/{id_pasta}")
 
-        df_docs = df_raw[df_raw['Número do Processo'] == num_proc].reset_index()
-        cols_d = ["Farol", "Nome do Documento", "Tipo de Documento", "Score", "Status"]
+        # Ordenar documentos por nome e filtrar pelo processo
+        df_docs = df_raw[df_raw['Número do Processo'] == num_proc].sort_values('Nome do Documento').reset_index()
+        
+        # Nova Ordem de Colunas Solicitada
+        cols_d = ["Farol", "Score", "Tipo de Documento", "Nome do Documento", "Status"]
         sel_doc = st.dataframe(df_docs[cols_d], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
         if len(sel_doc['selection']['rows']) > 0:
             doc_row = df_docs.iloc[sel_doc['selection']['rows'][0]]
             original_idx = doc_row['index']
-            st.info(f"🔍 **Documento:** {doc_row['Nome do Documento']}")
+            st.info(f"🔍 **Análise:** {doc_row['Nome do Documento']}")
             
-            t_resumo, t_analise, t_acoes = st.tabs(["📝 Resumo", "📊 Análise", "🚀 Ações"])
+            t_resumo, t_analise, t_acoes = st.tabs(["📝 Resumo", "📊 Análise de Auditoria", "🚀 Ações"])
             with t_resumo: st.markdown(doc_row.get('Resumo', '*Nenhum resumo.*'))
             with t_analise: st.markdown(doc_row.get('Retorno', '*Nenhuma análise.*'))
             
             with t_acoes:
-                c_btn1, c_btn2 = st.columns(2)
-                with c_btn1:
-                    if st.button("🔄 Disparar Re-análise"):
-                        with st.spinner("IA processando e calculando score..."):
-                            try:
-                                model = genai.GenerativeModel(MODEL_NAME)
-                                service_drive = build('drive', 'v3', credentials=creds)
-                                file_id = doc_row.get('ID do Arquivo')
-                                
-                                meta = service_drive.files().get(fileId=file_id, fields='mimeType').execute()
-                                mime_type = meta.get('mimeType')
-                                fh = io.BytesIO()
-                                
-                                # LÓGICA DE TRATAMENTO POR TIPO DE ARQUIVO
-                                if "google-apps.document" in mime_type:
-                                    req = service_drive.files().export_media(fileId=file_id, mimeType='application/pdf')
-                                    downloader = MediaIoBaseDownload(fh, req)
-                                    done = False
-                                    while not done: _, done = downloader.next_chunk()
-                                    input_data = [{'mime_type': 'application/pdf', 'data': fh.getvalue()}]
-                                elif "text/html" in mime_type or "html" in doc_row['Nome do Documento'].lower():
-                                    req = service_drive.files().get_media(fileId=file_id)
-                                    downloader = MediaIoBaseDownload(fh, req)
-                                    done = False
-                                    while not done: _, done = downloader.next_chunk()
-                                    input_data = [f"CONTEÚDO HTML DO DOCUMENTO:\n{fh.getvalue().decode('iso-8859-1', errors='ignore')}"]
-                                else:
-                                    req = service_drive.files().get_media(fileId=file_id)
-                                    downloader = MediaIoBaseDownload(fh, req)
-                                    done = False
-                                    while not done: _, done = downloader.next_chunk()
-                                    input_data = [{'mime_type': mime_type, 'data': fh.getvalue()}]
-                                
-                                df_matriz = obter_matriz_do_storage()
-                                matriz_texto = df_matriz.to_string(index=False) if not df_matriz.empty else "Matriz padrão Lei 14.133."
+                if st.button("🔄 Disparar Re-análise (Gemini 3.1)"):
+                    with st.spinner("Analisando integridade do documento..."):
+                        try:
+                            model = genai.GenerativeModel(MODEL_NAME)
+                            service_drive = build('drive', 'v3', credentials=creds)
+                            file_id = doc_row.get('ID do Arquivo')
+                            
+                            meta = service_drive.files().get(fileId=file_id, fields='mimeType').execute()
+                            mime_type = meta.get('mimeType')
+                            fh = io.BytesIO()
+                            
+                            # Download e Preparação de Conteúdo (Suporte HTML e PDF)
+                            if "google-apps.document" in mime_type:
+                                req = service_drive.files().export_media(fileId=file_id, mimeType='application/pdf')
+                            else:
+                                req = service_drive.files().get_media(fileId=file_id)
+                            
+                            downloader = MediaIoBaseDownload(fh, req)
+                            done = False
+                            while not done: _, done = downloader.next_chunk()
+                            
+                            if "text/html" in mime_type or "html" in doc_row['Nome do Documento'].lower():
+                                input_data = [f"CONTEÚDO HTML:\n{fh.getvalue().decode('iso-8859-1', errors='ignore')}"]
+                            else:
+                                input_data = [{'mime_type': 'application/pdf' if "google-apps.document" in mime_type else mime_type, 'data': fh.getvalue()}]
+                            
+                            df_matriz = obter_matriz_do_storage()
+                            matriz_texto = df_matriz.to_string(index=False) if not df_matriz.empty else "Matriz Padrão Lei 14.133."
 
-                                prompt_final = f"""
-                                Você é o Agente Sentinela, auditor de licitações. Analise este documento conforme a MATRIZ:
-                                {matriz_texto}
+                            prompt_final = f"Analise este documento baseado na Matriz: {matriz_texto}\nAo final escreva SCORE_FINAL: X%"
+                            response = model.generate_content([prompt_final] + input_data)
+                            texto_retorno = response.text
+                            
+                            score_match = re.search(r"SCORE_FINAL:\s*(\d+%)", texto_retorno)
+                            score_valor = score_match.group(1) if score_match else "0%"
 
-                                FORMATO DE RESPOSTA:
-                                1. Identifique Documento e Processo SEI.
-                                2. Tabela: | ID | Item de Verificação | Análise | Status |
-                                3. Status deve ser apenas: Adequada ou Inadequada.
-                                4. Notas de Auditoria e Recomendação Final.
-
-                                CÁLCULO DE SCORE (CRÍTICO):
-                                Ao final da resposta, escreva exatamente: "SCORE_FINAL: X%" 
-                                Onde X é a porcentagem de itens 'Adequada' em relação ao total de itens analisados na tabela.
-                                """
-
-                                # CHAMADA UNIFICADA (aceita lista de partes: texto ou mídia)
-                                response = model.generate_content([prompt_final] + input_data)
-                                texto_retorno = response.text
-                                
-                                score_match = re.search(r"SCORE_FINAL:\s*(\d+%)", texto_retorno)
-                                score_valor = score_match.group(1) if score_match else "0%"
-
-                                cabecalho = ws.row_values(1)
-                                if 'Retorno' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Retorno') + 1, texto_retorno)
-                                if 'Score' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Score') + 1, score_valor)
-                                
-                                st.success(f"Análise concluída! Score: {score_valor}")
-                                st.rerun()
-                            except Exception as e: st.error(f"Erro: {e}")
-
-                with c_btn2:
-                    if st.button("📄 Relatório para Cópia"): st.session_state.show_copy_area = True
-
-                if st.session_state.get('show_copy_area'):
-                    st.divider()
-                    relatorio = f"ANÁLISE SENTINELA\nDoc: {doc_row['Nome do Documento']}\n\n{doc_row['Retorno']}"
-                    st.text_area("Conteúdo", value=relatorio, height=300)
-                    if st.button("Fechar"): 
-                        st.session_state.show_copy_area = False
-                        st.rerun()
+                            cabecalho = ws.row_values(1)
+                            agora = datetime.now(fuso_br).strftime("%d/%m/%Y %H:%M:%S")
+                            if 'Retorno' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Retorno') + 1, texto_retorno)
+                            if 'Score' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Score') + 1, score_valor)
+                            if 'Status' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Status') + 1, "2 - Processado")
+                            if 'Data Ultimo Processamento' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Data Ultimo Processamento') + 1, agora)
+                            
+                            st.success(f"Sucesso! Score: {score_valor}")
+                            st.rerun()
+                        except Exception as e: st.error(f"Erro: {e}")

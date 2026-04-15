@@ -15,7 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.cloud import storage
 
 # --- CONFIGURAÇÕES DO SENTINELA ---
-st.set_page_config(page_title="Sentinela 0.5", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Sentinela 0.6", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=60 * 1000, key="datarefresh")
 
 PLANILHA_ID = "1DYQ6Hsbp5xua9RFGmNGeKqITGZygvo6gIdtF4WkMG1Q"

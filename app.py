@@ -15,7 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.cloud import storage
 
 # --- CONFIGURAÇÕES DO SENTINELA ---
-st.set_page_config(page_title="Sentinela 0.5", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Sentinela 0.6", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=60 * 1000, key="datarefresh")
 
 PLANILHA_ID = "1DYQ6Hsbp5xua9RFGmNGeKqITGZygvo6gIdtF4WkMG1Q"
@@ -48,10 +48,15 @@ def obter_matriz_do_storage():
     except:
         return pd.DataFrame()
 
-def mapear_cor_risco(valor):
-    if valor == "Alto": return "🔴"
-    if valor == "Médio": return "🟡"
-    return "🟢"
+def obter_farol(score_str):
+    """Regra: Verde > 90%, Amarelo 70-90%, Vermelho < 70%"""
+    try:
+        valor = float(str(score_str).replace('%', '').strip())
+        if valor >= 90: return "🟢"
+        if valor >= 70: return "🟡"
+        return "🔴"
+    except:
+        return "⚪"
 
 # --- LOGIN ---
 if 'logado' not in st.session_state:
@@ -77,14 +82,25 @@ try:
     df_raw = pd.DataFrame(ws.get_all_records())
     
     if not df_raw.empty:
-        # Preparação de Processos (Distinct)
-        df_processos = df_raw[['Número do Processo', 'ID da Pasta']].drop_duplicates().sort_values('Número do Processo').reset_index(drop=True)
-        df_processos['Fase'] = "Instrução"
-        df_processos['Risco'] = "Baixo" # Default
-        df_processos['Farol'] = df_processos['Risco'].apply(mapear_cor_risco)
+        # 1. Processamento de Documentos: Aplicar Farol Individual
+        df_raw['Farol'] = df_raw['Score'].apply(obter_farol)
         
-        # Lógica de Farol por Score para os documentos
-        df_raw['Farol'] = df_raw['Score'].apply(lambda x: "🔴" if str(x).replace('%','') != '' and int(str(x).replace('%','')) < 50 else "🟢")
+        # 2. Processamento de Processos: Calcular o menor score por processo
+        # Convertemos score para numerico temporariamente para achar o mínimo
+        df_raw['_score_num'] = pd.to_numeric(df_raw['Score'].astype(str).str.replace('%',''), errors='coerce').fillna(0)
+        
+        # Agrupamos para pegar o menor score de cada processo
+        df_min_scores = df_raw.groupby('Número do Processo')['_score_num'].min().reset_index()
+        df_min_scores.columns = ['Número do Processo', 'Score Processo']
+        
+        # Criamos a tabela de processos (Distinct)
+        df_processos = df_raw[['Número do Processo', 'ID da Pasta']].drop_duplicates().sort_values('Número do Processo')
+        df_processos = df_processos.merge(df_min_scores, on='Número do Processo', how='left')
+        
+        df_processos['Farol'] = df_processos['Score Processo'].apply(lambda x: obter_farol(f"{x}%"))
+        df_processos['Fase'] = "Instrução"
+        df_processos['Risco'] = df_processos['Score Processo'].apply(lambda x: "Alto" if x < 70 else ("Médio" if x < 90 else "Baixo"))
+
 except Exception as e:
     st.error(f"Erro de conexão: {e}")
     st.stop()
@@ -100,7 +116,6 @@ if st.sidebar.button("Sair"):
 if menu == "Dashboard":
     st.header("Dashboard Sentinela 0.5")
     
-    # Cálculos dos Cards
     total_processos = df_raw['Número do Processo'].nunique()
     total_docs = len(df_raw)
     docs_processados = len(df_raw[df_raw['Status'].astype(str).str.contains('2')])
@@ -114,23 +129,19 @@ if menu == "Dashboard":
     c4.metric("Pendentes", docs_pendentes)
     c5.metric("% Concluído", f"{percentual_concluido:.1f}%")
 
-    # Gráfico Temporal
     st.subheader("Produtividade: Documentos Processados por Dia")
     if 'Data Ultimo Processamento' in df_raw.columns:
         df_vix = df_raw[df_raw['Status'].astype(str).str.contains('2')].copy()
-        # Converte para data simples (YYYY-MM-DD)
         df_vix['Data'] = pd.to_datetime(df_vix['Data Ultimo Processamento'], dayfirst=True, errors='coerce').dt.date
         df_timeline = df_vix.groupby('Data').size().reset_index(name='Quantidade')
         
         if not df_timeline.empty:
-            fig = px.line(df_timeline, x='Data', y='Quantidade', markers=True, template="plotly_white", color_discrete_sequence=['#00CC96'])
+            fig = px.line(df_timeline, x='Data', y='Quantidade', markers=True, template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Aguardando processamento de documentos para gerar gráfico.")
 
 # --- ABA: CONTROLE ---
 elif menu == "Controle":
-    st.subheader("📁 Processos (Sentinela 0.5)")
+    st.subheader("📁 Processos (Ordenados por Número)")
     cols_p = ["Farol", "Número do Processo", "Fase", "Risco"]
     sel_processo = st.dataframe(df_processos[cols_p], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
@@ -141,28 +152,27 @@ elif menu == "Controle":
 
         st.divider()
         c_h1, c_h2 = st.columns([0.8, 0.2])
-        c_h1.subheader(f"📄 Documentos do Processo: {num_proc}")
+        c_h1.subheader(f"📄 Documentos: {num_proc} (Menor Score: {proc_selecionado['Score Processo']}%)")
         if id_pasta: c_h2.link_button("📂 Abrir Pasta", f"https://drive.google.com/drive/folders/{id_pasta}")
 
-        # Ordenar documentos por nome e filtrar pelo processo
         df_docs = df_raw[df_raw['Número do Processo'] == num_proc].sort_values('Nome do Documento').reset_index()
         
-        # Nova Ordem de Colunas Solicitada
+        # Ordem solicitada: Farol, Score, Tipo, Nome, Status
         cols_d = ["Farol", "Score", "Tipo de Documento", "Nome do Documento", "Status"]
         sel_doc = st.dataframe(df_docs[cols_d], use_container_width=True, on_select="rerun", selection_mode="single-row", hide_index=True)
 
         if len(sel_doc['selection']['rows']) > 0:
             doc_row = df_docs.iloc[sel_doc['selection']['rows'][0]]
             original_idx = doc_row['index']
-            st.info(f"🔍 **Análise:** {doc_row['Nome do Documento']}")
+            st.info(f"🔍 **Análise Detalhada:** {doc_row['Nome do Documento']}")
             
-            t_resumo, t_analise, t_acoes = st.tabs(["📝 Resumo", "📊 Análise de Auditoria", "🚀 Ações"])
+            t_resumo, t_analise, t_acoes = st.tabs(["📝 Resumo", "📊 Auditoria", "🚀 Ações"])
             with t_resumo: st.markdown(doc_row.get('Resumo', '*Nenhum resumo.*'))
             with t_analise: st.markdown(doc_row.get('Retorno', '*Nenhuma análise.*'))
             
             with t_acoes:
                 if st.button("🔄 Disparar Re-análise (Gemini 3.1)"):
-                    with st.spinner("Analisando integridade do documento..."):
+                    with st.spinner("IA recalculando scores..."):
                         try:
                             model = genai.GenerativeModel(MODEL_NAME)
                             service_drive = build('drive', 'v3', credentials=creds)
@@ -172,7 +182,6 @@ elif menu == "Controle":
                             mime_type = meta.get('mimeType')
                             fh = io.BytesIO()
                             
-                            # Download e Preparação de Conteúdo (Suporte HTML e PDF)
                             if "google-apps.document" in mime_type:
                                 req = service_drive.files().export_media(fileId=file_id, mimeType='application/pdf')
                             else:
@@ -183,14 +192,14 @@ elif menu == "Controle":
                             while not done: _, done = downloader.next_chunk()
                             
                             if "text/html" in mime_type or "html" in doc_row['Nome do Documento'].lower():
-                                input_data = [f"CONTEÚDO HTML:\n{fh.getvalue().decode('iso-8859-1', errors='ignore')}"]
+                                input_data = [f"HTML:\n{fh.getvalue().decode('iso-8859-1', errors='ignore')}"]
                             else:
                                 input_data = [{'mime_type': 'application/pdf' if "google-apps.document" in mime_type else mime_type, 'data': fh.getvalue()}]
                             
                             df_matriz = obter_matriz_do_storage()
-                            matriz_texto = df_matriz.to_string(index=False) if not df_matriz.empty else "Matriz Padrão Lei 14.133."
+                            matriz_texto = df_matriz.to_string(index=False) if not df_matriz.empty else "Matriz Padrão."
 
-                            prompt_final = f"Analise este documento baseado na Matriz: {matriz_texto}\nAo final escreva SCORE_FINAL: X%"
+                            prompt_final = f"Analise conforme Matriz: {matriz_texto}\nEscreva SCORE_FINAL: X%"
                             response = model.generate_content([prompt_final] + input_data)
                             texto_retorno = response.text
                             
@@ -199,11 +208,13 @@ elif menu == "Controle":
 
                             cabecalho = ws.row_values(1)
                             agora = datetime.now(fuso_br).strftime("%d/%m/%Y %H:%M:%S")
+                            
+                            # Atualiza planilha (Linha original + 2 por causa do cabeçalho e índice zero)
                             if 'Retorno' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Retorno') + 1, texto_retorno)
                             if 'Score' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Score') + 1, score_valor)
                             if 'Status' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Status') + 1, "2 - Processado")
                             if 'Data Ultimo Processamento' in cabecalho: ws.update_cell(original_idx + 2, cabecalho.index('Data Ultimo Processamento') + 1, agora)
                             
-                            st.success(f"Sucesso! Score: {score_valor}")
+                            st.success(f"Análise Finalizada! Score: {score_valor}")
                             st.rerun()
                         except Exception as e: st.error(f"Erro: {e}")
